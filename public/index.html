@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+
+<html lang="pt-BR">
+
+<head>
+
+  <meta charset="UTF-8">
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>CommitTime</title>
+
+  <link rel="icon" type="image/png" href="/img/logo.png">
+
+  <link rel="stylesheet" href="/css/style.css">
+
+</head>
+
+<body>
+
+
+
+  <!-- Auth -->
+
+  <div id="auth-page" class="auth-page">
+
+    <div class="auth-card">
+
+      <div class="auth-logo">
+
+        <img src="/img/logo.png" alt="CommitTime">
+
+        <p id="auth-title">Entrar</p>
+
+      </div>
+
+
+
+      <div id="login-error" class="error-msg hidden"></div>
+
+      <form id="login-form">
+
+        <div class="form-group">
+
+          <label>Email</label>
+
+          <input type="email" id="login-email" required placeholder="seu@email.com">
+
+        </div>
+
+        <div class="form-group">
+
+          <label>Senha</label>
+
+          <input type="password" id="login-password" required placeholder="••••••">
+
+        </div>
+
+        <button type="submit" class="btn btn-primary">Entrar</button>
+
+        <div class="auth-switch">
+
+          Não tem conta? <a href="#" id="show-register">Criar conta</a>
+
+        </div>
+
+      </form>
+
+
+
+      <div id="register-error" class="error-msg hidden"></div>
+
+      <form id="register-form" class="hidden">
+
+        <div class="form-group">
+
+          <label>Nome</label>
+
+          <input type="text" id="register-name" required placeholder="Seu nome">
+
+        </div>
+
+        <div class="form-group">
+
+          <label>Email</label>
+
+          <input type="email" id="register-email" required placeholder="seu@email.com">
+
+        </div>
+
+        <div class="form-group">
+
+          <label>Senha</label>
+
+          <input type="password" id="register-password" required placeholder="Mínimo 6 caracteres" minlength="6">
+
+        </div>
+
+        <div class="form-group">
+
+          <label>Nome do workspace</label>
+
+          <input type="text" id="register-workspace" placeholder="Minha Empresa (opcional)">
+
+        </div>
+
+        <button type="submit" class="btn btn-primary">Criar conta</button>
+
+        <div class="auth-switch">
+
+          Já tem conta? <a href="#" id="show-login">Entrar</a>
+
+        </div>
+
+      </form>
+
+    </div>
+
+  </div>
+
+
+
+  <!-- App -->
+
+  <div id="app" class="app-layout hidden">
+
+    <aside class="sidebar">
+
+      <div class="sidebar-header">
+
+        <div class="sidebar-logo">
+
+          <img src="/img/logo.png" alt="CommitTime">
+
+        </div>
+
+        <select id="workspace-select" class="workspace-select"></select>
+
+      </div>
+
+      <nav class="sidebar-nav">
+
+        <button class="nav-item active" data-page="timer">
+
+          <span class="icon">⏱</span> Timer
+
+        </button>
+
+        <button class="nav-item" data-page="projects">
+
+          <span class="icon">📁</span> Projetos
+
+        </button>
+
+        <button class="nav-item" data-page="team">
+
+          <span class="icon">👥</span> Equipe
+
+        </button>
+
+        <button class="nav-item" data-page="reports">
+
+          <span class="icon">📊</span> Relatórios
+
+        </button>
+
+      </nav>
+
+      <div class="sidebar-footer">
+
+        <div class="user-info">
+
+          <div id="user-avatar" class="user-avatar"></div>
+
+          <div>
+
+            <div id="user-name" class="user-name"></div>
+
+            <div id="user-email" class="user-email"></div>
+
+          </div>
+
+        </div>
+
+        <button id="logout-btn" class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px">Sair</button>
+
+      </div>
+
+    </aside>
+
+
+
+    <main class="main-content">
+
+      <header class="page-header">
+
+        <h2 id="page-title">Timer</h2>
+
+      </header>
+
+      <div id="page-content" class="page-body"></div>
+
+    </main>
+
+  </div>
+
+
+
+  <script src="/js/app.js?v=6"></script>
+
+</body>
+
+</html>
+
+
