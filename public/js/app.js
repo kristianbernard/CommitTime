@@ -34,18 +34,15 @@ const API = {
 
 function formatDuration(seconds) {
   if (!seconds || seconds < 0) return '0:00:00';
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
+  const total = Math.round(Number(seconds));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
   return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 function formatDurationShort(seconds) {
-  if (!seconds || seconds < 0) return '0h 0m';
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
+  return formatDuration(seconds);
 }
 
 function formatHoursDecimal(seconds) {
@@ -82,12 +79,62 @@ function formatReportDay(day) {
 function entryDuration(entry) {
   const start = new Date(entry.start_time);
   const end = entry.end_time ? new Date(entry.end_time) : new Date();
-  return (end - start) / 1000;
+  return Math.round((end - start) / 1000);
+}
+
+function sumEntryDurations(entries) {
+  return entries.reduce((s, e) => s + (e.end_time ? entryDuration(e) : 0), 0);
+}
+
+function getLocalDayRange() {
+  const now = new Date();
+  return {
+    start: new Date(now.getFullYear(), now.getMonth(), now.getDate()),
+    end: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999),
+  };
+}
+
+function getLocalWeekRange() {
+  const now = new Date();
+  const day = now.getDay();
+  const diffToMonday = day === 0 ? 6 : day - 1;
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - diffToMonday);
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+  return { start, end };
+}
+
+function getLocalMonthRange() {
+  const now = new Date();
+  return {
+    start: new Date(now.getFullYear(), now.getMonth(), 1),
+    end: new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999),
+  };
+}
+
+function sumEntriesInRange(entries, start, end) {
+  return entries.reduce((sum, e) => {
+    if (!e.end_time) return sum;
+    const t = new Date(e.start_time);
+    if (t >= start && t <= end) return sum + entryDuration(e);
+    return sum;
+  }, 0);
+}
+
+function resolveDashboardSeconds(dashboard, key, fallback) {
+  if (Object.prototype.hasOwnProperty.call(dashboard, key)) {
+    const v = parseFloat(dashboard[key]);
+    if (Number.isFinite(v) && v > 0) return v;
+    if (Number.isFinite(v) && fallback > 0) return fallback;
+    if (Number.isFinite(v)) return v;
+  }
+  return fallback;
 }
 
 function formatDateTime(iso) {
   const d = new Date(iso);
-  return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleString('pt-BR', {
+    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
 }
 
 function formatDate(iso) {
@@ -97,7 +144,7 @@ function formatDate(iso) {
 function toInputDateTime(iso) {
   const d = new Date(iso);
   const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 const COLORS = ['#03A9F4', '#4CAF50', '#FF9800', '#E91E63', '#9C27B0', '#00BCD4', '#FF5722', '#795548'];
@@ -112,10 +159,37 @@ const state = {
   members: [],
   timerInterval: null,
   lastReport: null,
+  navGeneration: 0,
 };
 
 function $(sel) { return document.querySelector(sel); }
 function $$(sel) { return document.querySelectorAll(sel); }
+
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function isNavStale(gen) {
+  return gen !== undefined && gen !== state.navGeneration;
+}
+
+function setPageLoading(message) {
+  const el = $('#page-content');
+  if (el) {
+    el.innerHTML = `<div class="empty-state"><p>${escapeHtml(message || 'Carregando...')}</p></div>`;
+  }
+}
+
+function setPageError(message) {
+  const el = $('#page-content');
+  if (el) {
+    el.innerHTML = `<div class="error-msg">${escapeHtml(message)}</div>`;
+  }
+}
 
 function showModal(html) {
   const overlay = document.createElement('div');
@@ -238,11 +312,11 @@ function renderSidebar() {
     .map((w) => `<option value="${w.id}" ${w.id === state.currentWorkspace?.id ? 'selected' : ''}>${w.name}</option>`)
     .join('');
 
-  wsSelect.onchange = () => {
+  wsSelect.onchange = async () => {
     state.currentWorkspace = state.workspaces.find((w) => w.id === wsSelect.value);
     localStorage.setItem('workspaceId', wsSelect.value);
-    navigate(state.currentPage);
-    loadRunningTimer();
+    await navigate(state.currentPage);
+    await loadRunningTimer();
   };
 
   $$('.nav-item').forEach((item) => {
@@ -259,17 +333,26 @@ function renderSidebar() {
 
 // ─── Navigation ─────────────────────────────
 
-function navigate(page) {
+async function navigate(page) {
   state.currentPage = page;
+  const gen = ++state.navGeneration;
+
   $$('.nav-item').forEach((i) => i.classList.toggle('active', i.dataset.page === page));
   const titles = { timer: 'Timer', projects: 'Projetos', team: 'Equipe', reports: 'Relatórios' };
   $('#page-title').textContent = titles[page] || page;
+  setPageLoading('Carregando...');
 
-  switch (page) {
-    case 'timer': renderTimerPage(); break;
-    case 'projects': renderProjectsPage(); break;
-    case 'team': renderTeamPage(); break;
-    case 'reports': renderReportsPage(); break;
+  try {
+    switch (page) {
+      case 'timer': await renderTimerPage(gen); break;
+      case 'projects': await renderProjectsPage(gen); break;
+      case 'team': await renderTeamPage(gen); break;
+      case 'reports': await renderReportsPage(gen); break;
+      default: if (!isNavStale(gen)) setPageError('Página não encontrada');
+    }
+  } catch (err) {
+    console.error('navigate error:', page, err);
+    if (!isNavStale(gen)) setPageError(`Erro ao carregar: ${err.message}`);
   }
 }
 
@@ -320,93 +403,176 @@ function updateTimerDisplay() {
   }
 }
 
-async function renderTimerPage() {
+async function ensureProjects(wsId) {
+  if (state.projects.length) return state.projects;
+  state.projects = await API.get(`/workspaces/${wsId}/projects`);
+  return state.projects;
+}
+
+async function renderTimerPage(gen) {
   const wsId = getWsId();
   if (!wsId) {
-    $('#page-content').innerHTML = '<div class="empty-state"><h3>Crie um workspace para começar</h3></div>';
+    if (!isNavStale(gen)) {
+      $('#page-content').innerHTML = '<div class="empty-state"><h3>Crie um workspace para começar</h3></div>';
+    }
     return;
   }
 
   const [dashboard, projects, entries] = await Promise.all([
-    API.get(`/workspaces/${wsId}/dashboard`),
+    API.get(`/workspaces/${wsId}/dashboard?tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Sao_Paulo')}`),
     API.get(`/workspaces/${wsId}/projects`),
     API.get(`/workspaces/${wsId}/time-entries?userId=${state.user.id}`),
   ]);
 
+  if (isNavStale(gen)) return;
+
   state.projects = projects;
 
+  const monthRange = getLocalMonthRange();
+  const dayRange = getLocalDayRange();
+  const weekRange = getLocalWeekRange();
+  const stats = {
+    today: resolveDashboardSeconds(dashboard, 'todaySeconds', sumEntriesInRange(entries, dayRange.start, dayRange.end)),
+    week: resolveDashboardSeconds(dashboard, 'weekSeconds', sumEntriesInRange(entries, weekRange.start, weekRange.end)),
+    month: resolveDashboardSeconds(dashboard, 'monthSeconds', sumEntriesInRange(entries, monthRange.start, monthRange.end)),
+    all: resolveDashboardSeconds(dashboard, 'allSeconds', sumEntryDurations(entries)),
+  };
+
   const projectOptions = projects.map((p) =>
-    `<option value="${p.id}" ${state.runningTimer?.project_id === p.id ? 'selected' : ''}>${p.name}</option>`
+    `<option value="${p.id}" ${state.runningTimer?.project_id === p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>`
   ).join('');
 
   $('#page-content').innerHTML = `
     <div class="timer-bar">
-      <input type="text" id="timer-description" class="timer-input" placeholder="O que você está fazendo?" value="${state.runningTimer?.description || ''}">
+      <input type="text" id="timer-description" class="timer-input" placeholder="O que você está fazendo?" value="${escapeHtml(state.runningTimer?.description || '')}">
       <select id="timer-project" class="timer-project-select">
         <option value="">Sem projeto</option>
         ${projectOptions}
       </select>
       <div id="timer-display" class="timer-display ${state.runningTimer ? 'running' : ''}">0:00:00</div>
-      <button id="timer-toggle-btn" class="timer-btn-start ${state.runningTimer ? 'stop' : ''}">${state.runningTimer ? '⏹' : '▶'}</button>
+      <button type="button" id="timer-toggle-btn" class="timer-btn-start ${state.runningTimer ? 'stop' : ''}" title="Iniciar/Parar">${state.runningTimer ? '⏹' : '▶'}</button>
+      <button type="button" id="manual-entry-btn" class="btn btn-secondary btn-sm" style="white-space:nowrap">+ Manual</button>
     </div>
 
     <div class="stats-grid">
       <div class="stat-card">
         <div class="label">Hoje</div>
-        <div class="value">${formatDurationShort(dashboard.todaySeconds)}</div>
+        <div class="value">${formatDuration(stats.today)}</div>
       </div>
       <div class="stat-card">
         <div class="label">Esta semana</div>
-        <div class="value">${formatDurationShort(dashboard.weekSeconds)}</div>
+        <div class="value">${formatDuration(stats.week)}</div>
       </div>
       <div class="stat-card">
-        <div class="label">Projetos ativos</div>
-        <div class="value">${projects.length}</div>
+        <div class="label">Este mês</div>
+        <div class="value">${formatDuration(stats.month)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Total geral</div>
+        <div class="value">${formatDuration(stats.all)}</div>
       </div>
     </div>
 
     <h3 style="margin-bottom:16px;font-size:16px;">Entradas recentes</h3>
-    ${renderEntriesTable(entries.slice(0, 20))}
+    ${renderEntriesTable(entries.slice(0, 50), sumEntryDurations(entries.slice(0, 50)))}
   `;
 
   updateTimerDisplay();
   if (state.runningTimer) startTimerTick();
 
   $('#timer-toggle-btn').onclick = toggleTimer;
+  $('#manual-entry-btn').onclick = () => showManualEntryModal();
 }
 
 async function toggleTimer() {
   const wsId = getWsId();
-  if (state.runningTimer) {
-    await API.post(`/time-entries/${state.runningTimer.id}/stop`);
-    state.runningTimer = null;
-    stopTimerTick();
-    renderTimerPage();
-  } else {
-    const desc = $('#timer-description').value;
-    const projectId = $('#timer-project').value || null;
-    const entry = await API.post(`/workspaces/${wsId}/time-entries`, {
-      description: desc,
-      projectId,
-    });
-    state.runningTimer = entry;
-    startTimerTick();
-    updateTimerDisplay();
+  try {
+    if (state.runningTimer) {
+      await API.post(`/time-entries/${state.runningTimer.id}/stop`);
+      state.runningTimer = null;
+      stopTimerTick();
+      await renderTimerPage(state.navGeneration);
+    } else {
+      const desc = $('#timer-description')?.value || '';
+      const projectId = $('#timer-project')?.value || null;
+      const entry = await API.post(`/workspaces/${wsId}/time-entries`, {
+        description: desc,
+        projectId,
+      });
+      state.runningTimer = entry;
+      startTimerTick();
+      updateTimerDisplay();
+    }
+  } catch (err) {
+    alert('Erro no timer: ' + err.message);
   }
 }
 
-function renderEntriesTable(entries) {
+function showManualEntryModal() {
+  const now = new Date();
+  const oneHourAgo = new Date(now.getTime() - 3600000);
+  const projects = state.projects || [];
+  const projectOptions = projects.map((p) =>
+    `<option value="${p.id}">${escapeHtml(p.name)}</option>`
+  ).join('');
+
+  showModal(`
+    <h3>Entrada manual</h3>
+    <div class="form-group"><label>Descrição</label><input id="manual-desc" placeholder="O que você fez?"></div>
+    <div class="form-group"><label>Projeto</label>
+      <select id="manual-project"><option value="">Sem projeto</option>${projectOptions}</select>
+    </div>
+    <div class="form-group"><label>Início</label><input type="datetime-local" step="1" id="manual-start" value="${toInputDateTime(oneHourAgo.toISOString())}"></div>
+    <div class="form-group"><label>Fim</label><input type="datetime-local" step="1" id="manual-end" value="${toInputDateTime(now.toISOString())}"></div>
+    <div class="checkbox-row"><input type="checkbox" id="manual-billable"><label for="manual-billable">Faturável</label></div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+      <button type="button" class="btn btn-primary" id="save-manual-btn" style="width:auto">Salvar</button>
+    </div>
+  `);
+
+  $('#save-manual-btn').onclick = async () => {
+    const startVal = $('#manual-start').value;
+    const endVal = $('#manual-end').value;
+    if (!startVal || !endVal) return alert('Informe início e fim');
+    if (new Date(endVal) <= new Date(startVal)) return alert('O fim deve ser depois do início');
+
+    const btn = $('#save-manual-btn');
+    btn.disabled = true;
+    btn.textContent = 'Salvando...';
+    try {
+      await API.post(`/workspaces/${getWsId()}/time-entries`, {
+        description: $('#manual-desc').value,
+        projectId: $('#manual-project').value || null,
+        startTime: new Date(startVal).toISOString(),
+        endTime: new Date(endVal).toISOString(),
+        billable: $('#manual-billable').checked,
+      });
+      closeModal();
+      await navigate('timer');
+    } catch (err) {
+      alert('Erro ao salvar: ' + err.message);
+      btn.disabled = false;
+      btn.textContent = 'Salvar';
+    }
+  };
+}
+
+function renderEntriesTable(entries, listTotalSeconds) {
   if (!entries.length) {
     return '<div class="empty-state"><div class="icon">⏱</div><h3>Nenhuma entrada ainda</h3><p>Inicie o timer acima para registrar seu tempo</p></div>';
   }
+  const totalSecs = listTotalSeconds != null
+    ? Math.round(listTotalSeconds)
+    : sumEntryDurations(entries);
   return `<table class="data-table">
     <thead><tr>
       <th>Projeto</th><th>Descrição</th><th>Início</th><th>Duração</th><th></th>
     </tr></thead>
     <tbody>${entries.map((e) => `
       <tr>
-        <td>${e.project_name ? `<span class="project-dot" style="background:${e.project_color}"></span>${e.project_name}` : '—'}</td>
-        <td>${e.description || '—'}</td>
+        <td>${e.project_name ? `<span class="project-dot" style="background:${e.project_color}"></span>${escapeHtml(e.project_name)}` : '—'}</td>
+        <td>${escapeHtml(e.description) || '—'}</td>
         <td>${formatDateTime(e.start_time)}</td>
         <td class="duration">${e.end_time ? formatDuration(entryDuration(e)) : '<span style="color:var(--success)">Em andamento</span>'}</td>
         <td><div class="table-actions">
@@ -415,58 +581,92 @@ function renderEntriesTable(entries) {
         </div></td>
       </tr>
     `).join('')}</tbody>
+    <tfoot><tr>
+      <td colspan="3"><strong>Total (${entries.length} entradas)</strong></td>
+      <td class="duration"><strong>${formatDuration(totalSecs)}</strong></td>
+      <td></td>
+    </tr></tfoot>
   </table>`;
 }
 
 window.editEntry = async function (id) {
   const wsId = getWsId();
-  const entries = await API.get(`/workspaces/${wsId}/time-entries`);
-  const entry = entries.find((e) => e.id === id);
-  if (!entry) return;
+  try {
+    const [entries, projects] = await Promise.all([
+      API.get(`/workspaces/${wsId}/time-entries`),
+      ensureProjects(wsId),
+    ]);
+    const entry = entries.find((e) => e.id === id);
+    if (!entry) return alert('Entrada não encontrada');
 
-  const projectOptions = state.projects.map((p) =>
-    `<option value="${p.id}" ${entry.project_id === p.id ? 'selected' : ''}>${p.name}</option>`
-  ).join('');
+    const projectOptions = projects.map((p) =>
+      `<option value="${p.id}" ${entry.project_id === p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>`
+    ).join('');
 
-  showModal(`
-    <h3>Editar entrada</h3>
-    <div class="form-group"><label>Descrição</label><input id="edit-desc" value="${entry.description || ''}"></div>
-    <div class="form-group"><label>Projeto</label>
-      <select id="edit-project"><option value="">Sem projeto</option>${projectOptions}</select>
-    </div>
-    <div class="form-group"><label>Início</label><input type="datetime-local" id="edit-start" value="${toInputDateTime(entry.start_time)}"></div>
-    <div class="form-group"><label>Fim</label><input type="datetime-local" id="edit-end" value="${entry.end_time ? toInputDateTime(entry.end_time) : ''}"></div>
-    <div class="checkbox-row"><input type="checkbox" id="edit-billable" ${entry.billable ? 'checked' : ''}><label for="edit-billable">Faturável</label></div>
-    <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
-      <button class="btn btn-primary" id="save-entry-btn" style="width:auto">Salvar</button>
-    </div>
-  `);
+    showModal(`
+      <h3>Editar entrada</h3>
+      <div class="form-group"><label>Descrição</label><input id="edit-desc" value="${escapeHtml(entry.description || '')}"></div>
+      <div class="form-group"><label>Projeto</label>
+        <select id="edit-project"><option value="">Sem projeto</option>${projectOptions}</select>
+      </div>
+      <div class="form-group"><label>Início</label><input type="datetime-local" step="1" id="edit-start" value="${toInputDateTime(entry.start_time)}"></div>
+      <div class="form-group"><label>Fim</label><input type="datetime-local" step="1" id="edit-end" value="${entry.end_time ? toInputDateTime(entry.end_time) : ''}"></div>
+      <div class="checkbox-row"><input type="checkbox" id="edit-billable" ${entry.billable ? 'checked' : ''}><label for="edit-billable">Faturável</label></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="save-entry-btn" style="width:auto">Salvar</button>
+      </div>
+    `);
 
-  $('#save-entry-btn').onclick = async () => {
-    await API.patch(`/time-entries/${id}`, {
-      description: $('#edit-desc').value,
-      projectId: $('#edit-project').value || null,
-      startTime: new Date($('#edit-start').value).toISOString(),
-      endTime: $('#edit-end').value ? new Date($('#edit-end').value).toISOString() : null,
-      billable: $('#edit-billable').checked,
-    });
-    closeModal();
-    navigate('timer');
-  };
+    $('#save-entry-btn').onclick = async () => {
+      const startVal = $('#edit-start').value;
+      const endVal = $('#edit-end').value;
+      if (!startVal) return alert('Informe o horário de início');
+      if (endVal && new Date(endVal) <= new Date(startVal)) {
+        return alert('O fim deve ser depois do início');
+      }
+
+      const btn = $('#save-entry-btn');
+      btn.disabled = true;
+      btn.textContent = 'Salvando...';
+      try {
+        await API.patch(`/time-entries/${id}`, {
+          description: $('#edit-desc').value,
+          projectId: $('#edit-project').value || null,
+          startTime: new Date(startVal).toISOString(),
+          endTime: endVal ? new Date(endVal).toISOString() : null,
+          billable: $('#edit-billable').checked,
+        });
+        closeModal();
+        await navigate('timer');
+      } catch (err) {
+        alert('Erro ao salvar: ' + err.message);
+        btn.disabled = false;
+        btn.textContent = 'Salvar';
+      }
+    };
+  } catch (err) {
+    alert('Erro ao carregar entrada: ' + err.message);
+  }
 };
 
 window.deleteEntry = async function (id) {
   if (!confirm('Excluir esta entrada?')) return;
-  await API.delete(`/time-entries/${id}`);
-  navigate('timer');
+  try {
+    await API.delete(`/time-entries/${id}`);
+    await navigate('timer');
+  } catch (err) {
+    alert('Erro ao excluir: ' + err.message);
+  }
 };
 
 // ─── Projects ───────────────────────────────
 
-async function renderProjectsPage() {
+async function renderProjectsPage(gen) {
   const wsId = getWsId();
   const projects = await API.get(`/workspaces/${wsId}/projects?archived=all`);
+  if (isNavStale(gen)) return;
+
   state.projects = projects.filter((p) => !p.archived);
 
   $('#page-content').innerHTML = `
@@ -557,7 +757,7 @@ function showNewProjectModal() {
       hourlyRate: $('#proj-rate').value || null,
     });
     closeModal();
-    renderProjectsPage();
+    await navigate('projects');
   };
 }
 
@@ -600,20 +800,22 @@ window.editProject = async function (id) {
       hourlyRate: $('#proj-rate').value || null,
     });
     closeModal();
-    renderProjectsPage();
+    await navigate('projects');
   };
 };
 
 window.archiveProject = async function (id, archived) {
   await API.patch(`/projects/${id}`, { archived });
-  renderProjectsPage();
+  await navigate('projects');
 };
 
 // ─── Team ───────────────────────────────────
 
-async function renderTeamPage() {
+async function renderTeamPage(gen) {
   const wsId = getWsId();
   const members = await API.get(`/workspaces/${wsId}/members`);
+  if (isNavStale(gen)) return;
+
   state.members = members;
   const myRole = state.currentWorkspace?.role;
   const canAdmin = ['OWNER', 'ADMIN'].includes(myRole);
@@ -667,7 +869,7 @@ async function renderTeamPage() {
           role: $('#invite-role').value,
         });
         closeModal();
-        renderTeamPage();
+        await navigate('team');
       };
     };
 
@@ -686,7 +888,7 @@ async function renderTeamPage() {
         state.currentWorkspace = { ...ws, role: 'OWNER' };
         closeModal();
         renderSidebar();
-        renderTeamPage();
+        await navigate('team');
       };
     };
   }
@@ -695,16 +897,18 @@ async function renderTeamPage() {
 window.removeMember = async function (userId) {
   if (!confirm('Remover este membro?')) return;
   await API.delete(`/workspaces/${getWsId()}/members/${userId}`);
-  renderTeamPage();
+  await navigate('team');
 };
 
 // ─── Reports ────────────────────────────────
 
-async function renderReportsPage() {
+async function renderReportsPage(gen) {
   const now = new Date();
   const yearStart = new Date(now.getFullYear(), 0, 1);
   const startVal = toLocalDateStr(yearStart);
   const endVal = toLocalDateStr(now);
+
+  if (isNavStale(gen)) return;
 
   $('#page-content').innerHTML = `
     <div class="report-filters">
@@ -735,6 +939,7 @@ async function renderReportsPage() {
     downloadReport();
   });
   document.getElementById('report-group').addEventListener('change', () => loadReport(false));
+  await loadReport(false);
 }
 
 async function downloadReport() {
@@ -842,6 +1047,12 @@ async function loadReport(skipLoadingMsg) {
   }
 }
 
+function renderDurationCell(seconds) {
+  const secs = Math.round(parseFloat(seconds) || 0);
+  return `<span class="duration">${formatDuration(secs)}</span>
+    <span style="display:block;font-size:11px;color:var(--text-muted);font-weight:400">${formatHoursDecimal(secs)}</span>`;
+}
+
 function renderReportResults(data, groupBy, el, start, end) {
   const totalSeconds = data.reduce((sum, d) => sum + (parseFloat(d.total_seconds) || 0), 0);
   const totalAmount = data.reduce((sum, d) => sum + (parseFloat(d.total_amount) || 0), 0);
@@ -855,8 +1066,8 @@ function renderReportResults(data, groupBy, el, start, end) {
     <div class="stats-grid" style="margin-bottom:24px">
       <div class="stat-card">
         <div class="label">Total de horas</div>
-        <div class="value">${formatHoursDecimal(totalSeconds)}</div>
-        <div style="font-size:12px;color:var(--text-muted);margin-top:4px">${formatDuration(totalSeconds)}</div>
+        <div class="value">${formatDuration(totalSeconds)}</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-top:4px">${formatHoursDecimal(totalSeconds)}</div>
       </div>
       <div class="stat-card">
         <div class="label">Valor total faturável</div>
@@ -887,14 +1098,14 @@ function renderReportResults(data, groupBy, el, start, end) {
           const day = formatReportDay(d.day);
           return `<tr>
             <td>${day}</td>
-            <td class="duration">${formatHoursDecimal(secs)}</td>
+            <td>${renderDurationCell(secs)}</td>
             <td class="report-money">${formatMoney(amount)}</td>
             <td style="width:40%"><div class="bar-track" style="height:8px"><div class="bar-fill" style="width:${pct}%"></div></div></td>
           </tr>`;
         }).join('')}</tbody>
         <tfoot><tr>
           <td><strong>Total</strong></td>
-          <td class="duration"><strong>${formatHoursDecimal(totalSeconds)}</strong></td>
+          <td>${renderDurationCell(totalSeconds)}</td>
           <td class="report-money"><strong>${formatMoney(totalAmount)}</strong></td>
           <td></td>
         </tr></tfoot>
@@ -915,7 +1126,7 @@ function renderReportResults(data, groupBy, el, start, end) {
           const rate = d.hourly_rate ? formatMoney(d.hourly_rate) : '—';
           return `<tr>
             <td><span class="project-dot" style="background:${color}"></span>${label}</td>
-            <td class="duration">${formatHoursDecimal(secs)}</td>
+            <td>${renderDurationCell(secs)}</td>
             <td>${rate}</td>
             <td class="report-money">${amount > 0 ? formatMoney(amount) : '—'}</td>
             <td style="width:30%"><div class="bar-track" style="height:8px"><div class="bar-fill" style="width:${pct}%;background:${color}"></div></div></td>
@@ -923,7 +1134,7 @@ function renderReportResults(data, groupBy, el, start, end) {
         }).join('')}</tbody>
         <tfoot><tr>
           <td><strong>Total</strong></td>
-          <td class="duration"><strong>${formatHoursDecimal(totalSeconds)}</strong></td>
+          <td>${renderDurationCell(totalSeconds)}</td>
           <td></td>
           <td class="report-money"><strong>${formatMoney(totalAmount)}</strong></td>
           <td></td>
@@ -943,14 +1154,14 @@ function renderReportResults(data, groupBy, el, start, end) {
         const color = d.avatar_color || 'var(--primary)';
         return `<tr>
           <td><span class="user-avatar" style="background:${color};width:24px;height:24px;font-size:11px;display:inline-flex;margin-right:8px">${d.name.charAt(0)}</span>${d.name}</td>
-          <td class="duration">${formatHoursDecimal(secs)}</td>
+          <td>${renderDurationCell(secs)}</td>
           <td class="report-money">${amount > 0 ? formatMoney(amount) : '—'}</td>
           <td style="width:30%"><div class="bar-track" style="height:8px"><div class="bar-fill" style="width:${pct}%;background:${color}"></div></div></td>
         </tr>`;
       }).join('')}</tbody>
       <tfoot><tr>
         <td><strong>Total</strong></td>
-        <td class="duration"><strong>${formatHoursDecimal(totalSeconds)}</strong></td>
+        <td>${renderDurationCell(totalSeconds)}</td>
         <td class="report-money"><strong>${formatMoney(totalAmount)}</strong></td>
         <td></td>
       </tr></tfoot>

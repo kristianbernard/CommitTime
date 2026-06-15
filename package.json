@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "db:migrate": "node db/migrate.js"
+    "db:seed-kristian": "node db/seed-kristian.js"
   },
   "engines": {
     "node": ">=14"

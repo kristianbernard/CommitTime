@@ -19,6 +19,25 @@ function slugify(text) {
     .replace(/(^-|-$)/g, '');
 }
 
+const WINDOWS_TZ_MAP = {
+  'E. South America Standard Time': 'America/Sao_Paulo',
+  'Central Brazilian Standard Time': 'America/Cuiaba',
+  'Central America Standard Time': 'America/Guatemala',
+  'UTC': 'UTC',
+};
+
+function normalizeTimezone(tz) {
+  if (!tz || typeof tz !== 'string') return 'America/Sao_Paulo';
+  if (WINDOWS_TZ_MAP[tz]) return WINDOWS_TZ_MAP[tz];
+  if (tz.includes('/')) return tz;
+  return 'America/Sao_Paulo';
+}
+
+function parsePgSeconds(value) {
+  const n = parseFloat(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
 // ─── Workspaces ───────────────────────────────────────────────
 
 router.post('/workspaces', requireAuth, async (req, res) => {
@@ -342,8 +361,8 @@ router.post('/workspaces/:workspaceId/time-entries', requireAuth, requireWorkspa
     'SELECT id FROM time_entries WHERE user_id = $1 AND end_time IS NULL',
     [req.session.userId]
   );
-  if (running.rows.length > 0) {
-    return res.status(400).json({ error: 'Já existe um timer em execução. Pare-o antes de criar outro.' });
+  if (running.rows.length > 0 && !endTime) {
+    return res.status(400).json({ error: 'Já existe um timer em execução. Pare-o antes de iniciar outro.' });
   }
 
   const start = startTime || new Date().toISOString();
@@ -559,23 +578,39 @@ router.get('/workspaces/:workspaceId/reports/export', requireAuth, requireWorksp
 });
 
 router.get('/workspaces/:workspaceId/dashboard', requireAuth, requireWorkspaceMember, async (req, res) => {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const weekStart = new Date(today);
-  weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+  const tz = normalizeTimezone(req.query.tz);
+  const baseParams = [req.workspaceId, req.session.userId];
 
   const todayResult = await req.db.query(
-    `SELECT SUM(EXTRACT(EPOCH FROM (COALESCE(end_time, NOW()) - start_time))) as seconds
+    `SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (COALESCE(end_time, NOW()) - start_time))), 0) as seconds
      FROM time_entries
-     WHERE workspace_id = $1 AND user_id = $2 AND start_time >= $3`,
-    [req.workspaceId, req.session.userId, today.toISOString()]
+     WHERE workspace_id = $1 AND user_id = $2
+       AND (start_time AT TIME ZONE $3)::date = (NOW() AT TIME ZONE $3)::date`,
+    [...baseParams, tz]
   );
 
   const weekResult = await req.db.query(
-    `SELECT SUM(EXTRACT(EPOCH FROM (COALESCE(end_time, NOW()) - start_time))) as seconds
+    `SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (COALESCE(end_time, NOW()) - start_time))), 0) as seconds
      FROM time_entries
-     WHERE workspace_id = $1 AND user_id = $2 AND start_time >= $3`,
-    [req.workspaceId, req.session.userId, weekStart.toISOString()]
+     WHERE workspace_id = $1 AND user_id = $2
+       AND (start_time AT TIME ZONE $3)::date >= date_trunc('week', NOW() AT TIME ZONE $3)::date`,
+    [...baseParams, tz]
+  );
+
+  const monthResult = await req.db.query(
+    `SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (COALESCE(end_time, NOW()) - start_time))), 0) as seconds
+     FROM time_entries
+     WHERE workspace_id = $1 AND user_id = $2
+       AND (start_time AT TIME ZONE $3)::date >= date_trunc('month', NOW() AT TIME ZONE $3)::date
+       AND (start_time AT TIME ZONE $3)::date < (date_trunc('month', NOW() AT TIME ZONE $3) + interval '1 month')::date`,
+    [...baseParams, tz]
+  );
+
+  const allResult = await req.db.query(
+    `SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (COALESCE(end_time, NOW()) - start_time))), 0) as seconds
+     FROM time_entries
+     WHERE workspace_id = $1 AND user_id = $2`,
+    baseParams
   );
 
   const recentResult = await req.db.query(
@@ -583,13 +618,15 @@ router.get('/workspaces/:workspaceId/dashboard', requireAuth, requireWorkspaceMe
      FROM time_entries te
      LEFT JOIN projects p ON p.id = te.project_id
      WHERE te.workspace_id = $1 AND te.user_id = $2
-     ORDER BY te.start_time DESC LIMIT 10`,
+     ORDER BY te.start_time DESC LIMIT 20`,
     [req.workspaceId, req.session.userId]
   );
 
   res.json({
-    todaySeconds: parseFloat(todayResult.rows[0].seconds) || 0,
-    weekSeconds: parseFloat(weekResult.rows[0].seconds) || 0,
+    todaySeconds: parsePgSeconds(todayResult.rows[0].seconds),
+    weekSeconds: parsePgSeconds(weekResult.rows[0].seconds),
+    monthSeconds: parsePgSeconds(monthResult.rows[0].seconds),
+    allSeconds: parsePgSeconds(allResult.rows[0].seconds),
     recentEntries: recentResult.rows,
   });
 });
