@@ -40,6 +40,25 @@ Acesse: http://localhost:3000
 | `SESSION_SECRET` | Segredo para sessões |
 | `PORT` | Porta do servidor (padrão: 3000) |
 
+## Deploy na Vercel
+
+1. Importe o repositório no [Vercel](https://vercel.com)
+2. Configure as **Environment Variables**:
+   - `DATABASE_URL` — string de conexão Neon (use a URL com **pooler**)
+   - `SESSION_SECRET` — string aleatória longa
+   - `NODE_ENV` — `production`
+3. Faça deploy e rode a migração uma vez (local ou CI):
+
+```bash
+npm run db:migrate
+```
+
+4. Teste a conexão: `https://seu-app.vercel.app/api/health`
+
+Deve retornar `{"ok":true,"db":"connected"}`.
+
+> **Importante:** a Vercel é serverless — sessões precisam ficar no PostgreSQL (já configurado). Sem `DATABASE_URL` na Vercel, o login não funciona.
+
 ## Estrutura
 
 ```
