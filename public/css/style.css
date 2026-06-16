@@ -294,6 +294,13 @@ input, select, textarea { font-family: inherit; }
   font-size: 13px;
 }
 
+.timer-clock {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 140px;
+}
+
 .timer-display {
   font-size: 28px;
   font-weight: 700;
@@ -301,9 +308,41 @@ input, select, textarea { font-family: inherit; }
   min-width: 120px;
   text-align: center;
   color: var(--primary);
+  border-radius: 8px;
+  padding: 2px 8px;
+  transition: background 0.15s;
 }
 
-.timer-display.running { color: var(--success); }
+.timer-display.running {
+  color: var(--success);
+  cursor: pointer;
+}
+
+.timer-display.running:hover {
+  background: rgba(76, 175, 80, 0.12);
+}
+
+.timer-start-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+}
+
+.timer-start-edit {
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  padding: 6px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  color: var(--text);
+  min-width: 200px;
+}
+
+.timer-start-edit.hidden { display: none; }
 
 .timer-btn-start {
   width: 48px; height: 48px;

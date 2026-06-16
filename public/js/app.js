@@ -155,6 +155,7 @@ const state = {
   currentWorkspace: null,
   currentPage: 'timer',
   runningTimer: null,
+  timerEditingStart: false,
   projects: [],
   members: [],
   timerInterval: null,
@@ -385,22 +386,128 @@ function stopTimerTick() {
 }
 
 function updateTimerDisplay() {
-  const el = $('#timer-display');
-  if (!el) return;
+  const durationEl = $('#timer-duration');
+  const hintEl = $('#timer-start-hint');
+  if (!durationEl) return;
+  if (state.timerEditingStart) return;
+
   if (state.runningTimer) {
     const secs = entryDuration(state.runningTimer);
-    el.textContent = formatDuration(secs);
-    el.classList.add('running');
+    durationEl.textContent = formatDuration(secs);
+    durationEl.classList.add('running');
+    durationEl.title = 'Clique para alterar o horário de início';
+    if (hintEl) {
+      hintEl.textContent = `Início: ${formatDateTime(state.runningTimer.start_time)}`;
+      hintEl.classList.remove('hidden');
+    }
     const btn = $('#timer-toggle-btn');
     if (btn) { btn.textContent = '⏹'; btn.classList.add('stop'); }
     const desc = $('#timer-description');
     if (desc && state.runningTimer.description) desc.value = state.runningTimer.description;
   } else {
-    el.textContent = '0:00:00';
-    el.classList.remove('running');
+    durationEl.textContent = '0:00:00';
+    durationEl.classList.remove('running');
+    durationEl.title = '';
+    if (hintEl) hintEl.classList.add('hidden');
     const btn = $('#timer-toggle-btn');
     if (btn) { btn.textContent = '▶'; btn.classList.remove('stop'); }
   }
+}
+
+function showTimerStartEditor() {
+  if (!state.runningTimer || state.timerEditingStart) return;
+
+  const durationEl = $('#timer-duration');
+  const hintEl = $('#timer-start-hint');
+  const inputEl = $('#timer-start-edit');
+  if (!durationEl || !inputEl) return;
+
+  state.timerEditingStart = true;
+  durationEl.classList.add('hidden');
+  if (hintEl) hintEl.classList.add('hidden');
+  inputEl.classList.remove('hidden');
+  inputEl.value = toInputDateTime(state.runningTimer.start_time);
+  inputEl.focus();
+  inputEl.select();
+}
+
+function hideTimerStartEditor(revert) {
+  const durationEl = $('#timer-duration');
+  const hintEl = $('#timer-start-hint');
+  const inputEl = $('#timer-start-edit');
+  if (!inputEl) return;
+
+  state.timerEditingStart = false;
+  inputEl.classList.add('hidden');
+  if (durationEl) durationEl.classList.remove('hidden');
+  if (!revert && hintEl && state.runningTimer) hintEl.classList.remove('hidden');
+  updateTimerDisplay();
+}
+
+async function saveTimerStartTime() {
+  const inputEl = $('#timer-start-edit');
+  if (!state.runningTimer || !inputEl) return;
+
+  const startVal = inputEl.value;
+  if (!startVal) {
+    hideTimerStartEditor(true);
+    return;
+  }
+
+  const newStart = new Date(startVal);
+  const now = new Date();
+  if (newStart > now) {
+    alert('O horário de início não pode ser no futuro');
+    inputEl.focus();
+    return;
+  }
+
+  const currentStart = new Date(state.runningTimer.start_time).getTime();
+  if (newStart.getTime() === currentStart) {
+    hideTimerStartEditor(true);
+    return;
+  }
+
+  inputEl.disabled = true;
+  try {
+    const updated = await API.patch(`/time-entries/${state.runningTimer.id}`, {
+      startTime: newStart.toISOString(),
+    });
+    state.runningTimer = { ...state.runningTimer, ...updated };
+    hideTimerStartEditor(true);
+  } catch (err) {
+    alert('Erro ao alterar início: ' + err.message);
+    inputEl.disabled = false;
+    inputEl.focus();
+  }
+}
+
+function setupTimerStartEditor() {
+  const durationEl = $('#timer-duration');
+  const inputEl = $('#timer-start-edit');
+  if (!durationEl || !inputEl) return;
+
+  durationEl.onclick = () => {
+    if (state.runningTimer && !state.timerEditingStart) showTimerStartEditor();
+  };
+
+  inputEl.onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      saveTimerStartTime();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      hideTimerStartEditor(true);
+    }
+  };
+
+  inputEl.onblur = () => {
+    if (state.timerEditingStart) {
+      setTimeout(() => {
+        if (state.timerEditingStart) saveTimerStartTime();
+      }, 150);
+    }
+  };
 }
 
 async function ensureProjects(wsId) {
@@ -449,7 +556,11 @@ async function renderTimerPage(gen) {
         <option value="">Sem projeto</option>
         ${projectOptions}
       </select>
-      <div id="timer-display" class="timer-display ${state.runningTimer ? 'running' : ''}">0:00:00</div>
+      <div class="timer-clock">
+        <div id="timer-duration" class="timer-display ${state.runningTimer ? 'running' : ''}">0:00:00</div>
+        <input type="datetime-local" step="1" id="timer-start-edit" class="timer-start-edit hidden" title="Horário de início">
+        <div id="timer-start-hint" class="timer-start-hint ${state.runningTimer ? '' : 'hidden'}"></div>
+      </div>
       <button type="button" id="timer-toggle-btn" class="timer-btn-start ${state.runningTimer ? 'stop' : ''}" title="Iniciar/Parar">${state.runningTimer ? '⏹' : '▶'}</button>
       <button type="button" id="manual-entry-btn" class="btn btn-secondary btn-sm" style="white-space:nowrap">+ Manual</button>
     </div>
@@ -480,6 +591,7 @@ async function renderTimerPage(gen) {
   updateTimerDisplay();
   if (state.runningTimer) startTimerTick();
 
+  setupTimerStartEditor();
   $('#timer-toggle-btn').onclick = toggleTimer;
   $('#manual-entry-btn').onclick = () => showManualEntryModal();
 }
@@ -490,6 +602,7 @@ async function toggleTimer() {
     if (state.runningTimer) {
       await API.post(`/time-entries/${state.runningTimer.id}/stop`);
       state.runningTimer = null;
+      state.timerEditingStart = false;
       stopTimerTick();
       await renderTimerPage(state.navGeneration);
     } else {
